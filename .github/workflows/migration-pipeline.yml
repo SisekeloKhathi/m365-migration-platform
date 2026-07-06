@@ -1,0 +1,215 @@
+﻿name: M365 Migration Platform CI/CD
+
+on:
+  push:
+    branches: [ "master", "main" ]
+  pull_request:
+    branches: [ "master", "main" ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+      run_migration:
+        description: 'Run migration after deployment'
+        type: boolean
+        default: false
+
+jobs:
+  validate-terraform:
+    name: 🔍 Validate Terraform
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.0
+
+      - name: Terraform Format
+        run: terraform fmt -check -recursive
+        working-directory: ./terraform
+
+      - name: Terraform Init
+        run: terraform init -backend=false
+        working-directory: ./terraform
+
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: ./terraform
+
+  validate-powershell:
+    name: ⚡ Validate PowerShell Scripts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PowerShell
+        uses: actions/setup-powershell@v2
+        with:
+          pwsh-version: '7.4.0'
+
+      - name: Validate Scripts
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path ./powershell -Recurse -Filter "*.ps1" | ForEach-Object {
+            Write-Host "Validating: $($_.Name)" -ForegroundColor Yellow
+            $errors = $null
+            $null = [System.Management.Automation.PSParser]::Tokenize($(Get-Content $_.FullName -Raw), [ref]$errors)
+            if ($errors) {
+              Write-Host "❌ Errors found in $($_.Name): $($errors.Count)" -ForegroundColor Red
+              exit 1
+            }
+            Write-Host "✅ $($_.Name) is valid" -ForegroundColor Green
+          }
+
+  validate-kubernetes:
+    name: ☸️ Validate Kubernetes Manifests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'latest'
+
+      - name: Setup Kubeconform
+        run: |
+          curl -L -o kubeconform.tar.gz https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz
+          tar -xf kubeconform.tar.gz
+          sudo mv kubeconform /usr/local/bin/
+
+      - name: Validate Manifests
+        run: |
+          for manifest in ./kubernetes/manifests/*.yaml; do
+            echo "Validating: $manifest"
+            kubeconform -kubernetes-version 1.34.8 $manifest
+          done
+
+  deploy-infrastructure:
+    name: 🏗️ Deploy Infrastructure
+    runs-on: ubuntu-latest
+    needs: [validate-terraform, validate-powershell, validate-kubernetes]
+    if: github.event_name == 'workflow_dispatch'
+    environment: ${{ github.event.inputs.environment }}
+    env:
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.0
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Terraform Init
+        run: terraform init -backend-config="environments/${{ github.event.inputs.environment }}/backend.tfvars"
+        working-directory: ./terraform
+
+      - name: Terraform Plan
+        run: terraform plan -var-file="environments/${{ github.event.inputs.environment }}/terraform.tfvars" -out=tfplan
+        working-directory: ./terraform
+
+      - name: Terraform Apply
+        run: terraform apply tfplan
+        working-directory: ./terraform
+
+      - name: Get AKS Credentials
+        run: |
+          az aks get-credentials --resource-group rg-m365-migration-${{ github.event.inputs.environment }} --name aks-m365-migration-${{ github.event.inputs.environment }}
+        working-directory: ./terraform
+
+      - name: Deploy Kubernetes Services
+        run: |
+          kubectl create namespace migration-system --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply -f ./kubernetes/manifests/
+        working-directory: ./terraform
+
+  run-migration:
+    name: 🚀 Run Migration
+    runs-on: ubuntu-latest
+    needs: [deploy-infrastructure]
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_migration == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PowerShell
+        uses: actions/setup-powershell@v2
+        with:
+          pwsh-version: '7.4.0'
+
+      - name: Get AKS Credentials
+        run: |
+          az aks get-credentials --resource-group rg-m365-migration-${{ github.event.inputs.environment }} --name aks-m365-migration-${{ github.event.inputs.environment }}
+        shell: bash
+
+      - name: Run Discovery
+        shell: pwsh
+        run: |
+          .\powershell\discovery\Get-M365Inventory.ps1 `
+            -TenantId "${{ secrets.M365_TENANT_ID }}" `
+            -ClientId "${{ secrets.M365_CLIENT_ID }}" `
+            -ClientSecret "${{ secrets.M365_CLIENT_SECRET }}"
+
+      - name: Run Assessment
+        shell: pwsh
+        run: |
+          .\powershell\assessment\Invoke-M365Assessment.ps1
+
+      - name: Run Migration
+        shell: pwsh
+        run: |
+          .\powershell\migration\Start-M365Migration.ps1 `
+            -SourceTenantId "${{ secrets.M365_TENANT_ID }}" `
+            -SourceClientId "${{ secrets.M365_CLIENT_ID }}" `
+            -SourceClientSecret "${{ secrets.M365_CLIENT_SECRET }}"
+
+      - name: Upload Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-reports
+          path: |
+            ./reports/*.html
+            ./reports/*.csv
+            ./reports/*.json
+
+  security-scan:
+    name: 🔐 Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
