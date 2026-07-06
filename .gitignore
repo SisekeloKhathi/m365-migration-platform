@@ -1,46 +1,13 @@
-# ===========================
-# Terraform
-# ===========================
 .terraform/
 .terraform.lock.hcl
-*.tfstate
-*.tfstate.*
+*.tfstate*
 *.tfplan
 terraform/tfplan*
-
 terraform.tfvars
 *.auto.tfvars
-
-crash.log
-
-# ===========================
-# Environment
-# ===========================
 .env
-.env.*
-
-# ===========================
-# VS Code
-# ===========================
 .vscode/
-
-# ===========================
-# Logs
-# ===========================
-*.log
-
-# ===========================
-# Generated Reports
-# ===========================
 reports/*.csv
 reports/*.html
 reports/*.json
-
-# Keep the folder
 !reports/.gitkeep
-
-# ===========================
-# Windows
-# ===========================
-Thumbs.db
-Desktop.ini
