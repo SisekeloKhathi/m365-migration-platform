@@ -1,0 +1,42 @@
+﻿apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outlook-worker
+  namespace: migration-system
+  labels:
+    app: outlook-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: outlook-worker
+  template:
+    metadata:
+      labels:
+        app: outlook-worker
+    spec:
+      containers:
+      - name: outlook-worker
+        image: busybox:latest
+        command: ["/bin/sh", "-c"]
+        args: ["echo 'Outlook Worker Started'; sleep 3600"]
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "20m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: outlook-worker
+  namespace: migration-system
+spec:
+  selector:
+    app: outlook-worker
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: ClusterIP

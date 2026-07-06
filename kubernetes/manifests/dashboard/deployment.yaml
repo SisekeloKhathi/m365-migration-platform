@@ -1,0 +1,58 @@
+﻿apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: migration-dashboard
+  namespace: migration-system
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head><title>M365 Migration Dashboard</title></head>
+    <body>
+      <h1>🚀 M365 Migration Platform</h1>
+      <p>Dashboard is running!</p>
+    </body>
+    </html>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: migration-dashboard
+  namespace: migration-system
+  labels:
+    app: migration-dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: migration-dashboard
+  template:
+    metadata:
+      labels:
+        app: migration-dashboard
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: dashboard
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: dashboard
+        configMap:
+          name: migration-dashboard
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: migration-dashboard
+  namespace: migration-system
+spec:
+  selector:
+    app: migration-dashboard
+  ports:
+  - port: 80
+    targetPort: 80
+  type: NodePort

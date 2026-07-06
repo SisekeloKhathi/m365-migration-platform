@@ -1,0 +1,42 @@
+﻿apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: migration-api
+  namespace: migration-system
+  labels:
+    app: migration-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: migration-api
+  template:
+    metadata:
+      labels:
+        app: migration-api
+    spec:
+      containers:
+      - name: migration-api
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: migration-api
+  namespace: migration-system
+spec:
+  selector:
+    app: migration-api
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
